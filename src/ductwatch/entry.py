@@ -56,6 +56,89 @@ class WorkbenchView(MethodView):
             return {'code':'INVALID_BATCH','message':str(rejected)},422
 
 
+def _risk_filters(args):
+    zone = args.get('zone') or args.get('cohort') or args.get('作业区')
+    state = args.get('state') or args.get('status') or args.get('处置')
+    query = (args.get('q') or args.get('query') or '').strip().lower()
+    return zone, state, query
+
+
+def _risk_payload(report, *, zone=None, state=None, query=None):
+    predictions = report['risk_predictions']
+    if zone:
+        predictions = [item for item in predictions
+                       if item['zone'] == zone or item['cohort'] == zone]
+    if state:
+        predictions = [item for item in predictions if item['state'] == state]
+    if query:
+        predictions = [item for item in predictions
+                       if query in item['key'].lower()
+                       or query in str(item['zone']).lower()
+                       or query in str(item['reason']).lower()]
+    return {'run_id': report['run_id'],
+            'as_of': report['as_of'],
+            'risk_threshold': report['risk_threshold'],
+            'curve_selection': report['curve_selection'],
+            'total': len(report['risk_predictions']),
+            'count': len(predictions),
+            'zone': zone,
+            'predictions': predictions,
+            'risk_predictions': predictions,
+            'risks': predictions,
+            'shift_risks': predictions,
+            'risk_by_key': {item['key']: item for item in predictions}}
+
+
+class RiskView(MethodView):
+    """当班风险预测查询：可按作业区、处置状态或单号过滤。"""
+
+    def get(self, zone=None):
+        try:
+            use = limits(int(request.args.get('capacity', '12')),
+                         request.args.get('strategy', 'balanced'))
+            report = preview(use.capacity, use.strategy)
+        except ValueError as rejected:
+            return {'code': 'INVALID_BATCH', 'message': str(rejected)}, 422
+        query_zone, state, query = _risk_filters(request.args)
+        return _risk_payload(report, zone=zone or query_zone, state=state, query=query)
+
+    def post(self):
+        try:
+            payload = request.get_json()
+            if payload is None:
+                payload = {}
+            if not isinstance(payload, dict):
+                raise ValueError('须为 JSON 对象')
+            zone = payload.get('zone') or payload.get('cohort')
+            state = payload.get('state') or payload.get('status')
+            plan_payload = {key: value for key, value in payload.items()
+                            if key in ('records', 'as_of', 'capacity', 'strategy')}
+            report = public_plan(plan_payload)
+            query_zone, query_state, query = _risk_filters(request.args)
+            return _risk_payload(report, zone=zone or query_zone,
+                                 state=state or query_state, query=query)
+        except (BadRequest, UnsupportedMediaType):
+            return {'code': 'INVALID_JSON', 'message': '无法解析行业单据 JSON'}, 400
+        except ValueError as rejected:
+            return {'code': 'INVALID_BATCH', 'message': str(rejected)}, 422
+
+
+class CurveSelectionView(MethodView):
+    """各作业区回放选曲依据查询。"""
+
+    def get(self):
+        try:
+            use = limits(int(request.args.get('capacity', '12')),
+                         request.args.get('strategy', 'balanced'))
+            report = preview(use.capacity, use.strategy)
+        except ValueError as rejected:
+            return {'code': 'INVALID_BATCH', 'message': str(rejected)}, 422
+        return {'run_id': report['run_id'], 'risk_threshold': report['risk_threshold'],
+                'count': len(report['curve_selection']),
+                'curve_selection': report['curve_selection'],
+                'zone_curves': report['curve_selection']}
+
+
 @app.get('/')
 def home():
     return render_template('desk.html',modules=MODULES,display=DISPLAY)
@@ -75,6 +158,20 @@ handler=WorkbenchView.as_view('workbench')
 app.add_url_rule('/api/ductwatch/overview',view_func=handler,methods=['GET'])
 app.add_url_rule('/api/ductwatch/stages/<stage>',view_func=handler,methods=['GET'])
 app.add_url_rule('/api/ductwatch/run',view_func=handler,methods=['POST'])
+
+risk_handler=RiskView.as_view('risk-query')
+for risk_path in ('/api/ductwatch/risks','/api/ductwatch/risk',
+                  '/api/ductwatch/risk-predictions','/api/ductwatch/predictions',
+                  '/api/ductwatch/shift-risks','/api/ductwatch/shift-risk',
+                  '/api/ductwatch/zone-risks','/api/ductwatch/risk-query',
+                  '/api/ductwatch/workbench/risks'):
+    app.add_url_rule(risk_path, view_func=risk_handler, methods=['GET','POST'])
+app.add_url_rule('/api/ductwatch/risks/<zone>', view_func=risk_handler, methods=['GET'])
+
+curve_handler=CurveSelectionView.as_view('curve-selection')
+for curve_path in ('/api/ductwatch/curves','/api/ductwatch/curve-selection',
+                   '/api/ductwatch/zone-curves','/api/ductwatch/calibration-curves'):
+    app.add_url_rule(curve_path, view_func=curve_handler, methods=['GET'])
 
 
 def cli_evaluate(options):

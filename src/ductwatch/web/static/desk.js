@@ -150,15 +150,27 @@ function showQueue() {
     if (!ledger) return;
     const sought = byId('filter').value.trim().toLocaleLowerCase('zh-CN');
     const state = byId('status-filter').value;
+    const zone = byId('zone-filter')?.value ?? '';
     const rows = ledger.rows.filter(item => (!state || item.state === state) &&
+          (!zone || item.zone === zone) &&
           (!sought || [item.key,item.zone,item.reason,item.evidence].some(text => text.toLocaleLowerCase('zh-CN').includes(sought))));
     byId('row-count').textContent = `${rows.length}/${ledger.rows.length} 条`;
     byId('work-rows').replaceChildren(rows.length ? rowsTable(rows,visibleOrder,{labels:order,choose:inspect}) : node('p','当前条件下没有匹配单据','empty'));
 }
 
+function syncZoneFilter(data) {
+    const picker = byId('zone-filter');
+    if (!picker) return;
+    const current = picker.value;
+    const zones = [...new Set(data.rows.map(row => row.zone).filter(Boolean))].sort((a,b) => a.localeCompare(b,'zh-CN'));
+    picker.replaceChildren(new Option('全部作业区',''), ...zones.map(zone => new Option(zone,zone)));
+    picker.value = zones.includes(current) ? current : '';
+}
+
 function redraw(data) {
     ledger = data;
     if (focus === 'record') focus = 6;
+    syncZoneFilter(data);
     byId('stamp').textContent = data.run_id;
     byId('capacity').value = data.capacity;
     byId('mode').value = data.mode;
@@ -202,6 +214,7 @@ nav.forEach((control,i) => control.addEventListener('click',() => {
 }));
 byId('filter').addEventListener('input',showQueue);
 byId('status-filter').addEventListener('change',showQueue);
+byId('zone-filter')?.addEventListener('change',showQueue);
 byId('scenario').addEventListener('submit',async (event) => {
     event.preventDefault();
     const submit = byId('apply');

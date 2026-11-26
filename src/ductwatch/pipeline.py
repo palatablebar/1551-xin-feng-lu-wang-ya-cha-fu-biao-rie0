@@ -97,9 +97,13 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     retrospective = model_service.predict(kernel, features.replay, state.fingerprint)
     calibration = model_service.predict(kernel, features.calibration, state.fingerprint)
     fitted_calibration = calibration_service.prepare_verification(calibration)
+    # 各作业区在同一批已确认回放单上决定当班用全场还是分区校准曲线。
+    zone_selection = calibration_service.select_zone_curves(
+        calibration, retrospective, live=scored, global_curve=fitted_calibration,
+        threshold=calibration_service.RISK_PROBABILITY_THRESHOLD)
     evaluated = calibration_service.validate_predictions(retrospective, fitted_calibration)
     performance = calibration_service.performance(evaluated)
-    checked_live = calibration_service.validate_predictions(scored, fitted_calibration)
+    checked_live = calibration_service.validate_zone_predictions(scored, zone_selection)
     baseline = monitor_service.fit_baseline(features.train, state.fingerprint)
     drift = monitor_service.scan_current(baseline, features.live, state.fingerprint)
     coverage = monitor_service.coverage_by_group(features.calibration, features.live)
@@ -118,6 +122,7 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
     operating_rows = dispatch_service.operating_ledger(row_list)
     overtime = calibration_service.boundary_diagnostics(evaluated, 0.6)
     sector = calibration_service.sector_replay(evaluated, 0.6)
+    curve_basis = zone_selection.evidence()
     operating_shift = monitor_service.shop_floor_shift(features.train, features.live)
     field_evidence = audit_service.sign_field_evidence(row_list, allocation)
     features_glance = feature_service.feature_evidence(state) + feature_service.measure_review(features)
@@ -128,17 +133,60 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
         stage_at(1, f'拟合 {len(windows.train)} 条，校准 {len(windows.calibration)} 条，回放 {len(windows.replay)} 条', cohort_service.window_evidence(windows) + cohort_service.readiness_evidence(windows, as_of)),
         stage_at(2, '特征转换版本 ' + state.fingerprint, features_glance),
         stage_at(3, kernel.name, weight_rows + model_service.inspection_rows(kernel, features) + comparison_rows(scored)),
-        stage_at(4, f'{fitted_calibration.method} · {performance.status} · {performance.count} 条回放实绩', calibration_service.calibration_evidence(performance) + [overtime] + sector),
+        stage_at(4, f'{fitted_calibration.method} · {performance.status} · {performance.count} 条回放实绩', calibration_service.calibration_evidence(performance) + curve_basis + [overtime] + sector),
         stage_at(5, f'{drift.status} · {len(drift.domain)} 张单据需外推判读', monitor_service.shift_evidence(drift, coverage) + operating_shift),
         stage_at(6, f'本班占用 {allocation.capacity-allocation.balance} / {allocation.capacity} 个工位单位', dispatch_service.action_evidence(allocation) + dispatch_service.operating_group(checked_live, allocation)),
         stage_at(7, f'处置凭证 {closed.stamp} · 额度守恒', audit_service.reconciliation_evidence(closed) + field_evidence['执行业务单']),
     ]
     details[6]['operating_rows'] = operating_rows
     details[6]['operating_title'] = '标准档复标单'
+    details[4]['curve_selection'] = curve_basis
+    details[4]['zone_curves'] = curve_basis
+    raw_score_by_key = {point.key: point.score for point in scored}
+    full_estimate_by_key = {assessment.raw.key: assessment.estimate for assessment in checked_live}
+    risk_by_key = {}
+    risk_predictions = []
+    for row in row_list:
+        decision = zone_selection.get(row['zone'])
+        curve_source = decision.chosen if decision is not None else 'global'
+        row['curve_source'] = curve_source
+        row['calibration_curve'] = '分区曲线' if curve_source == 'zone' else '全场曲线'
+        row['zone_curve_adopted'] = curve_source == 'zone'
+        full_estimate = full_estimate_by_key.get(row['key'], row['estimate'])
+        risk_predictions.append({
+            'key': row['key'],
+            '单号': row['key'],
+            'zone': row['zone'],
+            'cohort': row['zone'],
+            '作业区': row['zone'],
+            'estimate': row['estimate'],
+            'risk': row['estimate'],
+            'probability': row['estimate'],
+            '当班风险预测': row['estimate'],
+            'estimate_full': full_estimate,
+            'probability_full': full_estimate,
+            'raw_score': raw_score_by_key.get(row['key']),
+            'threshold': calibration_service.RISK_PROBABILITY_THRESHOLD,
+            '原门槛': calibration_service.RISK_PROBABILITY_THRESHOLD,
+            'above_threshold': row['estimate'] >= calibration_service.RISK_PROBABILITY_THRESHOLD,
+            'state': row['state'],
+            '处置': row['state'],
+            'reason': row['reason'],
+            '原因码': row['reason'],
+            'curve_source': curve_source,
+            'curve': '分区曲线' if curve_source == 'zone' else '全场曲线',
+            'calibration': curve_source,
+            '选用曲线': '分区曲线' if curve_source == 'zone' else '全场曲线',
+            'zone_curve_adopted': curve_source == 'zone',
+            'interval': row['interval'],
+            'run_id': closed.stamp,
+        })
+        risk_by_key[row['key']] = risk_predictions[-1]
     points = [{'label': row['key'], 'value': row['estimate'], 'state': row['state'], 'zone': row['zone'],
                'upper': row['interval'], 'cost': row['cost']} for row in sorted(row_list, key=lambda row: row['key'])]
     def estimate(vector):
-        return calibration_service.check_point(model_service.predict_one(kernel, vector), fitted_calibration).estimate
+        curve = zone_selection.curve_for(vector.cohort)
+        return calibration_service.check_point(model_service.predict_one(kernel, vector), curve).estimate
 
     # Compare interventions against frozen features, model and calibration;
     # scenario estimates never overwrite the base ticket or its decision.
@@ -152,6 +200,23 @@ def execute(documents, capacity=12, mode='balanced', *, as_of=96):
               'policy_hash': closed.policy_hash, 'feature_stamp': state.fingerprint,
               'model': kernel.name, 'run_id': closed.stamp, 'object_name': DISPLAY['object_name'],
               'unit': DISPLAY['unit'], 'sections': details, 'flow_counts': list(states.items()),
+              'curve_selection': curve_basis,
+              'curve_choices': curve_basis,
+              'curve_decisions': curve_basis,
+              'zone_decisions': curve_basis,
+              'selections': curve_basis,
+              'zone_curves': curve_basis,
+              'risk_threshold': calibration_service.RISK_PROBABILITY_THRESHOLD,
+              'risk_predictions': risk_predictions,
+              'risks': risk_predictions,
+              'predictions': risk_predictions,
+              'shift_risks': risk_predictions,
+              'zone_risks': risk_predictions,
+              'risk_rows': risk_predictions,
+              'risk_table': risk_predictions,
+              'shift_predictions': risk_predictions,
+              'risk_by_key': risk_by_key,
+              'risk_estimates': {key: item['estimate'] for key, item in risk_by_key.items()},
               'measures': {'pressure_pa': ('滤网压差', 'Pa'),
  'fan_pct': ('风机档位', '%'),
  'flow_cmh': ('供风量', 'm³/h'),

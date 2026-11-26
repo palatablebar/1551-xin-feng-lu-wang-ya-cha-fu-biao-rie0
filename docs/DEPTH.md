@@ -30,3 +30,6 @@ AI/ML · 传统ML · 中型
 | TRAP-44 | 校准样本不足 | 分派前转人工判读并保留原因 | `src/ductwatch/fan_replay/service.py` | `tests/test_fan_replay.py::test_empty_calibration_requires_review` |
 | TRAP-53 | 单条推断与混批 | 复用冻结参数，各条估计完全一致 | `src/ductwatch/flow_subspace/service.py` | `tests/test_flow_subspace.py::test_input_batch_invariance` |
 | TRAP-54 | 特征版本与模型不配对 | 拒绝继续推断并要求重拟合 | `src/ductwatch/flow_subspace/service.py` | `tests/test_flow_subspace.py::test_mismatched_model_input_version_fails` |
+| TRAP-55 | 分区校准不足八单或缺类 | 不拟合可用分区曲线，当班回落全场曲线 | `src/ductwatch/fan_replay/service.py` | `tests/test_fan_replay.py` |
+| TRAP-56 | 分区选曲的同批回放门槛 | 同一批已确认区内回放单上 MSE 严格更低且门槛漏查不增加才采用 | `src/ductwatch/fan_replay/service.py` | `tests/test_fan_replay.py` |
+| TRAP-57 | 选曲依据与处置凭证一致 | 同输入重算选曲、估计与 `run_id` 一致，风险查询对齐处置行 | `src/ductwatch/pipeline.py`、`src/ductwatch/entry.py` | `tests/test_workbench.py` |

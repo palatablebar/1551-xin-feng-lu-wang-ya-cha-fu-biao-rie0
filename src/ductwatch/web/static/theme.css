@@ -73,6 +73,7 @@ input, select { border: 1px solid var(--line); border-radius: min(7px, var(--rad
 .plot-canvas { display: block; width: 100%; height: auto; }
 .thermal .filters { padding: 4px var(--pad) 13px; display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
 .filters label { color: var(--quiet); }
+.queue-hint { margin: 2px var(--pad) 8px; color: var(--quiet); font: 12px/1.55 var(--font-ui); }
 .thermal .filters input { width: min(210px, 100%); }
 .thermal .table-scroll { overflow: auto; max-height: 383px; overscroll-behavior: contain; border-block-start: 1px solid var(--line); }
 .thermal table { border-collapse: separate; border-spacing: 0; width: 100%; min-width: max-content; font-size: 13px; }
